@@ -1,7 +1,12 @@
 # Secrets and environment: never in git
 /app/etc/env.php
+/app/etc/env.php.*
 /auth.json
+/auth.json.*
 /.env
+/.env.*
+!/.env.example
+!/.env.dist
 
 # Generated or uploaded at runtime
 /var/
@@ -13,5 +18,8 @@
 # Database dumps and keys
 *.sql
 *.sql.gz
+*.sql.bz2
+*.sql.zip
+*.dump
 *.pem
 *.key

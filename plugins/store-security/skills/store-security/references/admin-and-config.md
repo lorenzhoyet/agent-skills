@@ -16,6 +16,8 @@ Read values with `bin/magento config:show <path>`. Two traps:
 
 Stores that dump config to files keep some values in `app/etc/config.php`
 or `env.php` (`modules.dumped_config_paths`); those win over the database.
+`config:show` reads them too. Never open `env.php` to read one: the
+secrets are in the same file.
 
 ## Admin criteria (Recommended)
 
@@ -56,6 +58,29 @@ or `env.php` (`modules.dumped_config_paths`); those win over the database.
 - **Guest API access off unless needed**: `webapi/webapisecurity/allow_insecure`
   0, so anonymous REST calls can't read store configuration and catalog
   data meant for logged-in clients.
+- **Payment-page scripts under control** (PCI DSS 4.0.1, 6.4.3 and 11.6.1,
+  required since April 2025 for any store whose pages load the payment
+  form):
+  - every script on the checkout is authorized and inventoried: CSP in
+    restrict mode on checkout (the default since 2.4.7) is the
+    authorization, and the store's `csp_whitelist.xml` files are the
+    inventory; each entry needs a reason the merchant can give;
+  - each script's integrity is checked: 2.4.7 and later add Subresource
+    Integrity hashes to the payment pages' scripts (`Magento_Csp`); on
+    older versions, say it's missing. The hashes are computed at deploy
+    time from the files on the server: they catch a script changed at a
+    CDN or in transit, not one changed on a server that's already
+    compromised, nor inline code injected through the database;
+  - a change to the payment page's scripts or security headers is detected
+    and alerted on at least weekly (11.6.1). Magento doesn't do this: a
+    CSP report endpoint (`csp/mode/storefront/report_uri`) someone reads,
+    or a monitoring service. Ask what they use; "nothing" is a finding.
+  A store whose payment form is entirely the provider's (hosted page or
+  iframe) fills in SAQ A: since January 2025 SAQ A no longer lists 6.4.3
+  and 11.6.1, but asks the merchant to confirm their site isn't
+  susceptible to script attacks that could reach the payment form. These
+  checks are how they can confirm it, so they stay recommended. The ASV
+  scan (11.3.2) is a different check, from outside.
 - **Version not advertised**: `Magento_Version` disabled
   (`modules.version_module`), which serves `/magento_version` to anyone
   and helps bots pick stores with known holes.
@@ -63,8 +88,9 @@ or `env.php` (`modules.dumped_config_paths`); those win over the database.
 ## Fixing
 
 1. Config values: `bin/magento config:set <path> <value>`, then
-   `bin/magento cache:clean config`. If the store dumps config to files, set
-   it there instead and say so. `config:set` refuses paths without an admin
+   `bin/magento cache:clean config`. If the store dumps config to files,
+   add `--lock-config` or `--lock-env` to match where the path is, and say
+   so. `config:set` refuses paths without an admin
    field, like the CSP modes: set those in the `system` section of
    `app/etc/config.php` (`'system' => ['default' => ['csp' => ['mode' =>
    ['storefront' => ['report_only' => 0]]]]]`), or in the `etc/config.xml`

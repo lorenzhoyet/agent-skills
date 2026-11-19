@@ -22,10 +22,15 @@ security release behind is the single biggest risk a store can carry.
   not as a new `-pN`. A store on a listed version is fixed only if the patch
   is applied: look for it in `composer_patches` (cweagans/composer-patches),
   or with `vendor/bin/magento-patches status` when
-  `version.quality_patches_installed` is true. If you can't tell, report
+  `version.quality_patches_installed` is true (it runs PHP from `vendor/`:
+  only once area 3 found nothing). If you can't tell, report
   "not verified", never "patched".
 - Mage-OS ships its fixes in its own releases: check `mage-os/versions` and
   the bulletin's `fixedIn.mage-os`.
+- Adobe Commerce (`distribution: adobe-commerce`) follows the same release
+  numbers as Magento Open Source in the bulletins, plus fixes for its own
+  modules: read the bulletin's Adobe Commerce rows, not only the Open
+  Source ones.
 - If magento.watch doesn't answer, or doesn't list the installed version
   yet (new releases take a while: Mage-OS 4.0.0 was missing when this was
   written), say so and check by hand: Adobe Security Bulletins, or the
@@ -33,9 +38,11 @@ security release behind is the single biggest risk a store can carry.
   Never conclude "up to date" without a source.
 
 **Dependencies (Critical)**
-- `composer audit --locked --no-dev` reports no advisory. It reads
-  `composer.lock` only, installs nothing, and covers every package with a
-  published advisory, extensions included.
+- `composer audit --locked --no-dev --no-plugins --no-scripts` reports no
+  advisory. It reads `composer.lock` only, installs nothing, and covers
+  every package with a published advisory, extensions included. Without
+  `--no-plugins`, Composer loads the plugins in `vendor/`: the store's code,
+  possibly the attacker's.
 - No abandoned package among the store's own requirements
   (`version.abandoned_direct_requirements`): nobody will fix its next
   vulnerability. Abandoned packages pulled in by the core or an extension
@@ -59,7 +66,8 @@ security release behind is the single biggest risk a store can carry.
 
 1. **Upgrade within the release line** (2.4.7-p3 to the latest 2.4.7-pN):
    `composer require magento/product-community-edition=<version> --no-update`
-   then `composer update "magento/*" -W` (or `mage-os/*`). On a copy or
+   then `composer update "magento/*" -W` (or `mage-os/*`). That one runs
+   plugins and scripts, so only once area 3 found nothing. On a copy or
    staging first, then `bin/magento setup:upgrade`, `setup:di:compile`,
    `setup:static-content:deploy` and a test order. Never run it straight on
    production: it is a deploy.

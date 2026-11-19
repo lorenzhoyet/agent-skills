@@ -12,7 +12,7 @@ give you, after they said yes to this question (first round of step 3):
 **Live site** (decision `live_site.check`):
 
 > **Shall I check the live site at the URL you give me?** I'd send about
-> 20 read-only GET requests to a fixed list of paths (`/.git/HEAD`,
+> 25 read-only GET requests to a fixed list of paths (`/.git/HEAD`,
 > `/app/etc/env.php`, `/admin`, ...) and read the response headers. No login
 > attempts, nothing sent to forms, no other URLs. A WAF may log them.
 >
@@ -27,7 +27,7 @@ answer.
 ## Running
 
 ```bash
-python3 <skill-dir>/scripts/live_check.py https://store.example [--admin-path <path>]
+python3 <skill-dir>/scripts/live_check.py https://store.example [--store-root <store-root>]
 ```
 
 It sends GET requests without following redirects (one hop on the admin
@@ -37,26 +37,47 @@ status codes and verdicts, never response bodies.
 
 - Exit 1, `reachable: false`: nothing could be checked; report the error.
 - Exit 2, `homepage_redirects_to`: the base URL redirects (to `www.`, to
-  HTTPS, to a store view). Run again with that URL: checking the redirect
-  would test a host that isn't the store.
-Pass `--admin-path` only when the maintainer gives the real admin path; it
-is reported as `configured_admin_path`, never by name.
+  HTTPS, to a store view). `downgrades_to_http` true is a finding of its
+  own: HTTPS sends visitors to plain HTTP. With `same_site` true, run again
+  with that URL:
+  checking the redirect would test a host that isn't the store. With
+  `same_site` false it points to another host: ask the maintainer whether
+  they run it, and check it only on a yes.
+`--store-root` lets the script read the real admin path from `env.php`
+itself, so it never appears on a command line or in the conversation; it
+is reported as `configured_admin_path`, never by name. Pass it only when
+the store root is the copy of the site you're checking.
 
 Certificates are always verified. A local store with a mkcert certificate
 needs its CA: `--cafile <rootCA.pem>` (docker-magento installs it under
-`/usr/local/share/ca-certificates/`). When the script reports `reachable:
+`/usr/local/share/ca-certificates/`). That file can be the CA of an older
+container: when verification fails, compare its subject with the issuer
+the site serves (`openssl s_client -connect <host>:443 -servername <host>
+</dev/null | openssl x509 -noout -issuer`); a mismatch means the CA must be
+installed again (`bin/setup-ssl-ca` in docker-magento), not that checks
+should skip verification. When the script reports `reachable:
 false`, area 7 is "not checked": give the error, don't guess. On a public
 store, a certificate that fails verification is itself a Critical
 finding.
 
 ## Criteria (Recommended, except exposed files)
 
+- **`inconclusive` is null.** It's set when nothing was found exposed and
+  no probe got a plain 404: a WAF, a rate limit, a bot challenge (202,
+  405) or a block page served as 200 answered instead of the store. Then
+  "nothing exposed" proves nothing: area 7 is "not checked" for exposed
+  files, and the maintainer can allow the checks from their IP and run
+  them again. A file in `exposed` is always Critical, whatever else
+  answered.
 - **Nothing in `exposed`** (Critical when not empty): `.git/` lets anyone
   download the whole repository and its history; `app/etc/env.php` served
   as source gives away the database and the crypt key; `composer.lock` and
-  `magento_version` tell attackers which holes to try. When
+  `magento_version` tell attackers which holes to try; a served
+  `env.php.bak`, `.user.ini` or SQL dump is as bad as `env.php`. When
   `app/etc/env.php` or `composer.json` is exposed, the document root is
-  almost certainly the store root instead of `pub/`.
+  almost certainly the store root instead of `pub/`. Then `var/` is
+  served too, and with it `var/mage-os-security.json`, which tells which
+  areas fail: say so in the finding.
 - **`app_etc_reachable` false**: true with nothing in `exposed` means PHP
   ran `app/etc/env.php` instead of serving it. The keys didn't leak this
   time, but the web root is the store root, not `pub/`: Critical, same fix.
@@ -71,7 +92,12 @@ finding.
   `Strict-Transport-Security`, `Content-Security-Policy` (report-only is a
   finding, see `admin-and-config.md`), `X-Frame-Options` (Magento sets
   `SAMEORIGIN` by default; missing means a proxy strips it) and
-  `X-Content-Type-Options: nosniff`.
+  `X-Content-Type-Options: nosniff`. `checkout_security_headers` gives the
+  same on the checkout: a CSP in report-only mode there is the PCI DSS
+  6.4.3 gap from `admin-and-config.md`. With `checkout_redirected` true,
+  the empty cart sent the request to the cart page, whose headers aren't
+  the checkout's: say the checkout's CSP wasn't checked, and read it with
+  `bin/magento config:show` or the database instead.
 - **No version disclosure** (`disclosing_headers`): `Server` or
   `X-Powered-By` with version numbers, and `X-Magento-Cache-Debug` /
   `X-Magento-Tags`, which only show in developer mode.

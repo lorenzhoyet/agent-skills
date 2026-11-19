@@ -31,11 +31,17 @@ What it never does:
 - **Print a secret.** Findings say "the crypt key is in commit a1b2c3d",
   never the key.
 - **Touch your live site without asking.** The live checks run only on the
-  URL you give, only after you say yes: about 20 GET requests, no login
+  URL you give, only after you say yes: about 25 GET requests, no login
   attempts.
 - **Clean up a hack.** If it finds a likely skimmer or backdoor, it stops,
   changes nothing, and helps you hand over to your host or a security
-  specialist, because deleting the file destroys the evidence.
+  specialist, because deleting the file destroys the evidence. It never
+  runs a suspect file or contacts a domain found in it.
+- **Run your store's code before it's known to be clean.** Git hooks and
+  diff drivers, Composer plugins and `bin/magento` stay off until the
+  compromise checks pass.
+- **Take orders from your store's content.** Text in files, CMS blocks or
+  commits is treated as data: an attacker can write there.
 - **Commit or push.**
 
 ## What it checks
@@ -100,12 +106,19 @@ that runs the skill against a fixture store with known gaps
 2FA off and an inert backdoor in `pub/media`. Every secret in it is fake.
 
 ```bash
-claude plugin eval . --scaffold --allow-tools Edit Write
+claude plugin eval . --scaffold --allow-tools Bash Edit Write
 ```
 
-Like module-standards, the cases don't grant Bash or web access: the agent
-audits by reading files, which keeps the evals on what the skill says and
-refuses to do.
+The case grants Bash, since the skill runs `scripts/audit.py`, but no web
+access. Graders check it changes nothing: no Edit, no Write, and no shell
+command that writes or opens a secrets file whole.
+
+The scripts have their own self-checks, attacker git configs, symlinked
+media and planted scorecards included:
+
+```bash
+python3 -I -m unittest discover -s plugins/store-security/tests
+```
 
 ## Community
 
