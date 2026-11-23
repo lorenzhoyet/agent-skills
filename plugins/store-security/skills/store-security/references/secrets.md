@@ -25,14 +25,21 @@ leaked CI cache, a public fork, has them.
   Backups count too: `env.php.bak`, `.env.local`, `*.sql.gz`, an archive at
   the root.
 - `git.errors` is empty and `is_git_repository` isn't `null`: otherwise the
-  history wasn't read, and the area is "not checked".
+  history wasn't read, and the area is "not checked". A shallow clone
+  (`git clone --depth 1`, the usual deploy, or a `.git/shallow` an attacker
+  wrote) says so there: its older commits weren't read, so check the history
+  in a full clone of the repository. Committed images, videos, PDFs and
+  fonts aren't searched for secret patterns: read as text, they would make
+  every search time out.
   `app/etc/config.php` *should* be committed: it lists modules, no secrets.
 
 ## Fixing
 
 1. **Stop tracking now** (auto-fixable): add the entries from
-   `assets/gitignore` to `.gitignore`, then `git rm --cached <file>`. The
-   file stays on disk. This doesn't remove it from history.
+   `assets/gitignore` to `.gitignore`, then `git rm --cached <file>`, with
+   the safe `-c` options from SKILL.md. The file stays on disk. While
+   `git.filters_configured` isn't empty, `git rm` runs no filter, but the
+   maintainer's next `git add` does: say so. This doesn't remove it from history.
 2. **Rotate what leaked** (needs decision): a secret that reached git is
    compromised, whatever happens to the history next. The maintainer types
    every new secret themselves: you never see, choose or write one.

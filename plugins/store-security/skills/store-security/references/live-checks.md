@@ -31,7 +31,7 @@ python3 <skill-dir>/scripts/live_check.py https://store.example [--store-root <s
 ```
 
 It sends GET requests without following redirects (one hop on the admin
-paths, same host only), compares each response with a random-path "not
+paths and on `/checkout/`, same host only), compares each response with a random-path "not
 found" page to rule out stores that answer 200 to everything, and prints
 status codes and verdicts, never response bodies.
 
@@ -47,16 +47,22 @@ status codes and verdicts, never response bodies.
 itself, so it never appears on a command line or in the conversation; it
 is reported as `configured_admin_path`, never by name. Pass it only when
 the store root is the copy of the site you're checking.
+A redirect whose request fails is reported as `redirect_target` with the
+error's type only: the site chose that path, which may be the admin's.
 
 Certificates are always verified. A local store with a mkcert certificate
-needs its CA: `--cafile <rootCA.pem>` (docker-magento installs it under
+needs its CA: `--cafile <rootCA.pem>`, trusted on top of the system's
+(docker-magento installs it under
 `/usr/local/share/ca-certificates/`). That file can be the CA of an older
 container: when verification fails, compare its subject with the issuer
 the site serves (`openssl s_client -connect <host>:443 -servername <host>
 </dev/null | openssl x509 -noout -issuer`); a mismatch means the CA must be
-installed again (`bin/setup-ssl-ca` in docker-magento), not that checks
+installed again (`bin/setup-ssl-ca` in docker-magento, a script of the
+project that runs with sudo: the maintainer runs it), not that checks
 should skip verification. When the script reports `reachable:
-false`, area 7 is "not checked": give the error, don't guess. On a public
+false`, or `reachable: null` (no result within 5 minutes: a WAF or a site
+answering slowly on purpose), area 7 is "not checked": give the error,
+don't guess. On a public
 store, a certificate that fails verification is itself a Critical
 finding.
 
@@ -73,13 +79,14 @@ finding.
   download the whole repository and its history; `app/etc/env.php` served
   as source gives away the database and the crypt key; `composer.lock` and
   `magento_version` tell attackers which holes to try; a served
-  `env.php.bak`, `.user.ini` or SQL dump is as bad as `env.php`. When
-  `app/etc/env.php` or `composer.json` is exposed, the document root is
-  almost certainly the store root instead of `pub/`. Then `var/` is
-  served too, and with it `var/mage-os-security.json`, which tells which
-  areas fail: say so in the finding.
+  `env.php.bak`, `.user.ini`, SQL dump or listing of `var/backups/` is as
+  bad as `env.php`; a served `var/mage-os-security.json` tells which areas
+  fail. When `app/etc/env.php` or `composer.json` is exposed, the document
+  root is almost certainly the store root instead of `pub/`, and `var/` is
+  served too: say so in the finding.
 - **`app_etc_reachable` false**: true with nothing in `exposed` means PHP
-  ran `app/etc/env.php` instead of serving it. The keys didn't leak this
+  ran `app/etc/env.php` instead of serving it (an empty 200: the file
+  outputs nothing); `null` when the result is inconclusive. The keys didn't leak this
   time, but the web root is the store root, not `pub/`: Critical, same fix.
 - `statuses` lists the status code of every path, for the report.
 - **Admin login not public** (`admin.*.login_form_public`): a login form at
@@ -98,6 +105,8 @@ finding.
   the empty cart sent the request to the cart page, whose headers aren't
   the checkout's: say the checkout's CSP wasn't checked, and read it with
   `bin/magento config:show` or the database instead.
+  Each header is cut at 300 characters: a longer CSP is only partly
+  shown, so never call a directive missing from it; say what wasn't read.
 - **No version disclosure** (`disclosing_headers`): `Server` or
   `X-Powered-By` with version numbers, and `X-Magento-Cache-Debug` /
   `X-Magento-Tags`, which only show in developer mode.

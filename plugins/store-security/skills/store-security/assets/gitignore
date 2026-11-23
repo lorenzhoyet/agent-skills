@@ -3,10 +3,17 @@
 /app/etc/env.php.*
 /auth.json
 /auth.json.*
+!/auth.json.example
+!/auth.json.dist
+!/auth.json.sample
 /.env
 /.env.*
 !/.env.example
 !/.env.dist
+!/.env.sample
+/.envrc
+/app/etc/*env*.php*
+/app/etc/*~
 
 # Generated or uploaded at runtime
 /var/
@@ -19,7 +26,19 @@
 *.sql
 *.sql.gz
 *.sql.bz2
+*.sql.xz
 *.sql.zip
 *.dump
 *.pem
 *.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+
+# Archives at the root: usually a backup of the store, env.php included
+/*.tar
+/*.tar.gz
+/*.tgz
+/*.zip

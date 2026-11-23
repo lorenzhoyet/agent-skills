@@ -19,12 +19,19 @@ or `env.php` (`modules.dumped_config_paths`); those win over the database.
 `config:show` reads them too. Never open `env.php` to read one: the
 secrets are in the same file.
 
-## Admin criteria (Recommended)
+## Admin criteria (Recommended; 2FA off is Critical)
 
 - **Two-factor authentication on** (`modules.two_factor_auth`): the
   `Magento_TwoFactorAuth` module enabled, with at least one provider
   configured (`twofactorauth/general/force_providers`). Disabling it is the
-  most common shortcut and the most expensive one.
+  most common shortcut and the most expensive one. `modules.module_entries_odd`
+  lists modules set twice in `config.php` (the last one counts, as in PHP),
+  or to anything else than `0` or `1`, whose state is then `null`, unknown:
+  Magento writes neither, so each is a finding. `modules.modules_key_repeated`
+  true means `config.php` has two `'modules'` keys: PHP keeps the second,
+  which the audit doesn't follow, so every module state is `null`. Read
+  `config.php` then: 2FA and CSP are "not checked" until it's rewritten
+  with one `'modules'` array.
 - **Admin URL not guessable** (`env.admin_path_guessable`): not `admin`,
   `backend` or similar. It doesn't stop a determined attacker, but it stops
   the bots that try passwords on `/admin` all day. Better still: the admin

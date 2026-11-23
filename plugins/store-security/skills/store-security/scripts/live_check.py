@@ -5,7 +5,7 @@ Usage: python3 live_check.py <base-url> [--store-root <dir>] [--cafile <ca.pem>]
 
 Only GET requests, on a fixed list of paths, redirects not followed except one hop on the
 admin and checkout paths. Certificates are always verified; --cafile trusts an extra certificate
-authority, such as the mkcert CA of a local store. Prints JSON with status codes and
+authority, such as the mkcert CA of a local store, on top of the system's. Prints JSON with status codes and
 whether a response looks like the real file; never response bodies.
 """
 
@@ -14,14 +14,19 @@ import hashlib
 import re
 import http.client
 import json
+import os
 import secrets
+import signal
 import ssl
+import stat
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 TIMEOUT_SECONDS = 10
+# The timeout counts per read: a site dripping a byte at a time would hold the check for hours
+TOTAL_SECONDS = 300
 USER_AGENT = "store-security-check (read-only)"
 # path -> (text that proves the response is the real file, whether that file is an HTML page)
 PROBES = {
@@ -33,12 +38,16 @@ PROBES = {
     "composer.json": ('"require"', False),
     "composer.lock": ('"packages"', False),
     "auth.json": ('"http-basic"', False),
-    ".env": ("=", False),
-    ".user.ini": ("=", False),
+    # A NAME=value line: any HTML page holds a bare =
+    ".env": (re.compile(r"(?m)^[A-Z][A-Z0-9_]*="), False),
+    ".user.ini": (re.compile(r"(?m)^\s*[a-z_.]+\s*="), False),
     "dump.sql": ("CREATE TABLE", False),
     "backup.sql": ("CREATE TABLE", False),
     "var/log/system.log": ("main.", False),
     "var/log/exception.log": ("main.", False),
+    # The audit's own scorecard says which areas fail
+    "var/mage-os-security.json": ('"areas"', False),
+    "var/backups/": ("Index of", True),
     "magento_version": ("Magento/", False),
     "phpinfo.php": ("PHP Version", True),
     "info.php": ("PHP Version", True),
@@ -62,13 +71,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Client:
     def __init__(self, cafile: str | None):
-        context = ssl.create_default_context(cafile=cafile)
+        # cafile= alone would replace the system's authorities instead of adding one
+        context = ssl.create_default_context()
+        if cafile:
+            context.load_verify_locations(cafile=cafile)
         self.opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=context))
         self.errors: list[dict] = []
         # Paths reported by label only: the real admin path never goes into the output
         self.hidden_paths: dict[str, str] = {}
 
-    def get(self, url: str) -> tuple[int | None, dict, str]:
+    def get(self, url: str, hop: bool = False) -> tuple[int | None, dict, str]:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with self.opener.open(request, timeout=TIMEOUT_SECONDS) as response:
@@ -78,8 +90,12 @@ class Client:
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
             path = urllib.parse.urlparse(url).path
             segments = path.strip("/").split("/")
-            label = next((name for secret, name in self.hidden_paths.items() if secret in segments), path)
-            self.errors.append({"url_path": label, "error": str(getattr(error, "reason", error))})
+            # A hop's path is the site's choice (the real admin path, or words for the agent): never printed
+            label = next((name for secret, name in self.hidden_paths.items() if secret in segments),
+                         "redirect_target" if hop else header_value(path))
+            # A status line or a TLS error can carry the site's own words; a hop's error quotes its URL: its type only
+            reason = type(error).__name__ if hop else header_value(str(getattr(error, "reason", error)))
+            self.errors.append({"url_path": label, "error": reason})
             return None, {}, ""
 
 
@@ -108,7 +124,7 @@ def get_with_hop(client: Client, url: str) -> tuple[int | None, dict, str, bool]
     location = headers.get("location") if status in REDIRECTS else None
     hop = same_origin(url, location) if location else None
     if hop:
-        status, headers, body = client.get(hop)
+        status, headers, body = client.get(hop, hop=True)
     return status, headers, body, bool(hop)
 
 
@@ -119,12 +135,23 @@ def check_admin(client: Client, base: str, path: str) -> dict:
 
 def admin_path_from(store_root: str) -> str | None:
     """The admin path read from env.php, so it never appears on a command line or in the transcript."""
+    path = f"{store_root.rstrip('/')}/app/etc/env.php"
     try:
-        source = open(f"{store_root.rstrip('/')}/app/etc/env.php", encoding="utf-8", errors="ignore").read()
+        # A FIFO or /dev/zero behind the name would block or fill the memory
+        if not stat.S_ISREG(os.stat(path).st_mode) or os.stat(path).st_size > 2 * 1024 * 1024:
+            return None
+        source = open(path, encoding="utf-8", errors="ignore").read()
     except OSError:
         return None
-    match = re.search(r"'frontName'\s*=>\s*'([^']+)'", source)
-    return match.group(1) if match else None
+    # Comments out (PHP ends them at a line break, \r included, or at ?>), and the last key wins, as in PHP
+    source = re.sub(r"('(?:[^'\\]|\\.)*')|/\*.*?(?:\*/|\Z)|//(?:[^\r\n?]|\?(?!>))*|#(?!\[)(?:[^\r\n?]|\?(?!>))*", lambda match: match.group(1) or "", source, flags=re.DOTALL)
+    found = re.findall(r"""(['"])frontName\1\s*=>\s*(['"])([^'"]+)\2""", source)
+    return found[-1][2] if found else None
+
+
+def header_value(value: str | None) -> str | None:
+    """A header as it goes out: the site chose it, so printable ASCII only, cut short."""
+    return None if value is None else re.sub(r"[^\x20-\x7e]", "?", value)[:300]
 
 
 def same_host(base: str, target: str) -> bool:
@@ -141,8 +168,17 @@ def main() -> None:
     options = parser.parse_args()
 
     base = options.base_url.rstrip("/") + "/"
+
+    def too_slow(*_):
+        print(json.dumps({"base_url": base, "reachable": None, "error": f"no result within {TOTAL_SECONDS} s: not checked"}, indent=2))
+        sys.exit(1)
+    signal.signal(signal.SIGALRM, too_slow)
+    signal.alarm(TOTAL_SECONDS)
     if urllib.parse.urlparse(base).scheme not in ("http", "https") or not urllib.parse.urlparse(base).netloc:
         sys.exit("The base URL must look like https://store.example")
+    # It's printed in the result: a password in it would land in the transcript
+    if "@" in urllib.parse.urlparse(base).netloc:
+        sys.exit("The base URL must not hold a user name or password")
     try:
         client = Client(options.cafile)
     except (OSError, ssl.SSLError) as error:
@@ -161,7 +197,7 @@ def main() -> None:
         # Checking the redirect's host would report nothing exposed on a store we never reached
         target = urllib.parse.urljoin(base, headers.get("location", ""))
         same_site = same_host(base, target)
-        print(json.dumps({"base_url": base, "reachable": True, "homepage_redirects_to": target, "same_site": same_site,
+        print(json.dumps({"base_url": base, "reachable": True, "homepage_redirects_to": header_value(target), "same_site": same_site,
                           "downgrades_to_http": base.startswith("https://") and target.startswith("http://"),
                           "note": "Run again with the URL the store redirects to." if same_site
                           else "Another host: ask the maintainer whether they run it before checking it."}, indent=2))
@@ -171,12 +207,19 @@ def main() -> None:
     soft_404 = fingerprint(soft_404_body) if soft_404_status == 200 else None
     catch_all_body = soft_404_body if soft_404_status == 200 else ""
 
-    statuses, exposed = {}, []
+    statuses, exposed, app_etc_ran = {}, [], False
     for path, (marker, is_html) in PROBES.items():
         probe_status, _, body = client.get(base + path)
         statuses[path] = probe_status
+        # PHP running env.php outputs nothing: an empty 200, not a page (a dynamic catch-all page is one)
+        # A store that answers 200 with nothing to any path proves nothing
+        if path in ("app/etc/env.php", "app/etc/config.php") and probe_status == 200 and not body.strip() \
+                and not (soft_404_status == 200 and not soft_404_body.strip()):
+            app_etc_ran = True
         # A marker the catch-all page also contains proves nothing on a store that answers 200 to everything
-        real = marker in body and marker not in catch_all_body and fingerprint(body) != soft_404 and (is_html or not looks_like_html(body))
+        def holds(text: str) -> bool:
+            return bool(marker.search(text)) if isinstance(marker, re.Pattern) else marker in text
+        real = holds(body) and not holds(catch_all_body) and fingerprint(body) != soft_404 and (is_html or not looks_like_html(body))
         if probe_status == 200 and real:
             exposed.append(path)
 
@@ -202,15 +245,15 @@ def main() -> None:
         "exposed": exposed,
         "inconclusive": "no probe got a plain 404 (WAF, bot challenge or block page): nothing exposed is not proven" if blocked else None,
         # 200 here with nothing in exposed: PHP ran the file, so the web root is the store root, not pub/
-        "app_etc_reachable": statuses["app/etc/env.php"] == 200 or statuses["app/etc/config.php"] == 200,
+        "app_etc_reachable": None if blocked else app_etc_ran,
         "statuses": statuses,
         "admin": admin,
-        "security_headers": {name: headers.get(name) for name in SECURITY_HEADERS},
+        "security_headers": {name: header_value(headers.get(name)) for name in SECURITY_HEADERS},
         "checkout_status": checkout_status,
         # An empty cart sends /checkout/ to the cart page: its headers aren't the payment page's
         "checkout_redirected": checkout_redirected,
-        "checkout_security_headers": {name: checkout_headers.get(name) for name in SECURITY_HEADERS},
-        "disclosing_headers": {name: headers[name] for name in DISCLOSING_HEADERS if name in headers},
+        "checkout_security_headers": {name: header_value(checkout_headers.get(name)) for name in SECURITY_HEADERS},
+        "disclosing_headers": {name: header_value(headers[name]) for name in DISCLOSING_HEADERS if name in headers},
         "plain_http": plain_http,
         "errors": client.errors,
     }, indent=2))
